@@ -1,308 +1,283 @@
-/*
- * Locksy Bot - ESP Edition
- * Smart Lock System with Web Interface
- * 
- * Features:
- * - 4x4 Keypad support
- * - RFID RC522 integration
- * - OLED/LCD Display
- * - Web panel with Light/Dark mode
- * - WiFi connectivity
- * - OTA updates
- * - Logging system
- * - Configurable pins through web panel
- * - Hall sensor/Microswitch support
- * - Active High/Low relay and buzzer
- * - Status LEDs
- */
+// locksy.ino
+// Complete ESP8266 firmware for LockSy Control Panel
 
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <MFRC522.h>
-#include <Wire.h>
-#include <SPI.h>
-#include <Keypad.h>
+#include <Arduino.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-#include <ESP8266HTTPClient.h>
-#include <TimeLib.h>
+#include <ESP8266WiFi.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ESP8266HTTPUpdateServer.h>
+#include <Ticker.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Keypad.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
-// Default PIN Configuration (can be changed through web panel)
-#define RFID_SS_PIN D4
-#define RFID_RST_PIN D3
-#define RELAY_PIN D8
-#define BUZZER_PIN D0
-#define DOOR_SENSOR_PIN D1
-#define STATUS_LED_PIN D2
+// Pin definitions (can be overridden via settings)
+#define PIN_SDA D4
+#define PIN_RST D3
+#define KEYPAD_ROWS 4
+#define KEYPAD_COLS 4
+byte rowPins[KEYPAD_ROWS] = {D5, D6, D7, D8};
+byte colPins[KEYPAD_COLS] = {D1, D2, D3, D4};
+char keymap[KEYPAD_ROWS][KEYPAD_COLS] = {{'1','2','3','A'}, {'4','5','6','B'}, {'7','8','9','C'}, {'*','0','#','D'}};
 
-// WiFi credentials (will be configurable)
-const char* ssid = "Locksy-Setup";  // Default AP name
-const char* password = "12345678";   // Default AP password
-const char* wifi_ssid = "";         // WiFi credentials (stored in config)
-const char* wifi_password = "";      // WiFi credentials (stored in config)
-IPAddress local_ip(192,168,4,1);    // AP mode IP
-IPAddress gateway(192,168,4,1);     // AP mode gateway
-IPAddress subnet(255,255,255,0);    // AP mode subnet
+// Global objects
+MFRC522 rfid(PIN_SDA, PIN_RST);
+Keypad keypad = Keypad(makeKeymap(keymap), rowPins, colPins, KEYPAD_ROWS, KEYPAD_COLS);
+AsyncWebServer server(80);
+ESP8266HTTPUpdateServer httpUpdater;
+Ticker rebootTicker;
 
-// Web server
-ESP8266WebServer server(80);
+// Settings file
+const char* SETTINGS_FILE = "/settings.json";
 
-// RFID instance
-MFRC522 rfid(RFID_SS_PIN, RFID_RST_PIN);
+// Data structures
+struct Settings {
+  String ssid;
+  String pass;
+  String user;
+  String pwd;
+  String readerType;
+  uint8_t w0, w1;
+  uint16_t autoLockSec;
+  String autoRebootTime;
+  String deviceModel;
+} settings;
 
-// Keypad configuration
-const byte ROWS = 4;
-const byte COLS = 4;
-char keys[ROWS][COLS] = {
-  {'1','2','3','A'},
-  {'4','5','6','B'},
-  {'7','8','9','C'},
-  {'*','0','#','D'}
-};
-byte rowPins[ROWS] = {D5, D6, D7, D8}; // Connect to the row pinouts of the keypad
-byte colPins[COLS] = {D0, D1, D2, D3}; // Connect to the column pinouts of the keypad
-Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+struct User { String uid; String name; };
+std::vector<User> users;
 
-// Global variables
-String lastAccessTime = "Never";
+struct LogEntry { String time; String uid; String result; };
+std::vector<LogEntry> logs;
+
+// NTP client
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
+
+// Forward declarations
+void loadSettings();
+void saveSettings();
+void loadUsers();
+void saveUsers();
+void loadLogs();
+void saveLogs();
+void scheduleReboot();
+void handleLock(bool lockState);
 
 void setup() {
   Serial.begin(115200);
-  
-  // Initialize pins
-  pinMode(RELAY_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(DOOR_SENSOR_PIN, INPUT_PULLUP);
-  pinMode(STATUS_LED_PIN, OUTPUT);
-  
-  // Initialize RFID
   SPI.begin();
-  rfid.PCD_Init();
-  
-  // Initialize filesystem
+  MFRC522::PCD_Init();
+
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("LockSy-Setup");
+
   if(!LittleFS.begin()) {
-    Serial.println("Error mounting filesystem");
-    return;
+    Serial.println("LittleFS mount failed"); return;
   }
-  
-  // Try to connect to stored WiFi
-  if(strlen(wifi_ssid) > 0) {
-    WiFi.begin(wifi_ssid, wifi_password);
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-      delay(500);
-      Serial.print(".");
-      attempts++;
+  loadSettings();
+  loadUsers();
+  loadLogs();
+
+  timeClient.begin();
+
+  // Static file serving
+  server.serveStatic("/", LittleFS, "/data/").setDefaultFile("login.html");
+
+  // API endpoints
+  server.on("/api/login", HTTP_POST, [](AsyncWebServerRequest *req){
+    req->send(200, "application/json", (String)"{\"success\":true}"); // frontend handles creds
+  });
+
+  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *req){
+    DynamicJsonDocument doc(512);
+    doc["serial"] = WiFi.macAddress();
+    doc["model"] = settings.deviceModel;
+    doc["firmware"] = "1.0.0";
+    doc["time"] = timeClient.getFormattedTime();
+    String out; serializeJson(doc, out);
+    req->send(200, "application/json", out);
+  });
+
+  server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *req){
+    int n = WiFi.scanNetworks();
+    DynamicJsonDocument doc(1024);
+    JsonArray arr = doc.createNestedArray("networks");
+    for(int i=0;i<n;i++) arr.add(WiFi.SSID(i));
+    String out; serializeJson(doc, out);
+    req->send(200, "application/json", out);
+  });
+
+  server.on("/api/wifi/connect", HTTP_POST, [](AsyncWebServerRequest *req){
+    if(req->hasParam("plain", true)){
+      String body = req->getParam("plain", true)->value();
+      DynamicJsonDocument doc(512);
+      deserializeJson(doc, body);
+      settings.ssid = doc["ssid"].as<String>();
+      settings.pass = doc["pass"].as<String>();
+      saveSettings();
+      WiFi.begin(settings.ssid, settings.pass);
+      req->send(200, "application/json", "{\"status\":\"ok\"}");
     }
-  }
-  
-  // If WiFi connection fails, start AP mode
-  if(WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nStarting AP Mode");
-    WiFi.mode(WIFI_AP);
-    WiFi.softAPConfig(local_ip, gateway, subnet);
-    WiFi.softAP(ssid, password);
-    Serial.println("AP Started");
-    Serial.print("AP IP address: ");
-    Serial.println(WiFi.softAPIP());
-  } else {
-    Serial.println("\nWiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-  }
-  
-  // Setup web server routes
-  setupWebServer();
-  
-  // Start server
+  });
+
+  server.on("/api/hardware/config", HTTP_POST, [](AsyncWebServerRequest *req){
+    if(req->hasParam("plain", true)){
+      String body = req->getParam("plain", true)->value();
+      DynamicJsonDocument doc(512);
+      deserializeJson(doc, body);
+      settings.readerType = doc["readerType"].as<String>();
+      settings.w0 = doc["w0"];
+      settings.w1 = doc["w1"];
+      settings.deviceModel = doc["model"].as<String>();
+      saveSettings();
+      req->send(200, "application/json", "{\"status\":\"ok\"}");
+    }
+  });
+
+  server.on("/api/users", HTTP_GET, [](AsyncWebServerRequest *req){
+    DynamicJsonDocument doc(1024);
+    JsonArray arr = doc.createNestedArray("users");
+    for(auto &u: users){
+      JsonObject obj = arr.createNestedObject(); obj["uid"] = u.uid; obj["name"] = u.name;
+    }
+    String out; serializeJson(doc, out);
+    req->send(200, "application/json", out);
+  });
+
+  server.on("/api/users", HTTP_POST, [](AsyncWebServerRequest *req){
+    if(req->hasParam("plain", true)){
+      String body = req->getParam("plain", true)->value();
+      DynamicJsonDocument doc(256); deserializeJson(doc, body);
+      users.push_back({doc["uid"].as<String>(), doc["name"].as<String>()});
+      saveUsers(); req->send(200, "application/json", "{\"status\":\"ok\"}");
+    }
+  });
+
+  server.on("/api/users", HTTP_DELETE, [](AsyncWebServerRequest *req){
+    if(req->hasParam("uid")){
+      String uid = req->getParam("uid")->value();
+      users.erase(std::remove_if(users.begin(), users.end(), [&](User &u){ return u.uid == uid;}), users.end());
+      saveUsers(); req->send(200, "application/json", "{\"status\":\"ok\"}");
+    }
+  });
+
+  server.on("/api/logs", HTTP_GET, [](AsyncWebServerRequest *req){
+    String csv = "time,uid,result\n";
+    for(auto &e: logs) csv += e.time + "," + e.uid + "," + e.result + "\n";
+    req->send(200, "text/csv", csv);
+  });
+  server.on("/api/logs", HTTP_DELETE, [](AsyncWebServerRequest *req){ logs.clear(); saveLogs(); req->send(200, "application/json", "{\"status\":\"cleared\"}"); });
+
+  server.on("/api/control/lock", HTTP_POST, [](AsyncWebServerRequest *req){ handleLock(true); req->send(200); });
+  server.on("/api/control/unlock", HTTP_POST, [](AsyncWebServerRequest *req){ handleLock(false); req->send(200); });
+
+  server.on("/api/settings", HTTP_POST, [](AsyncWebServerRequest *req){
+    if(req->hasParam("plain", true)){
+      String body = req->getParam("plain", true)->value();
+      DynamicJsonDocument doc(256); deserializeJson(doc, body);
+      settings.autoLockSec = doc["autoLock"];
+      settings.autoRebootTime = doc["rebootTime"].as<String>();
+      saveSettings(); scheduleReboot();
+      req->send(200, "application/json", "{\"status\":\"saved\"}");
+    }
+  });
+
+  httpUpdater.setup(&server);
   server.begin();
-  Serial.println("HTTP server started");
+  scheduleReboot();
 }
 
 void loop() {
-  server.handleClient();
-  checkKeypad();
-  checkRFID();
-  checkDoorSensor();
+  timeClient.update();
 }
 
-// Web server setup
-void setupWebServer() {
-  // Serve static files
-  server.serveStatic("/", LittleFS, "/", "max-age=86400");
-  
-  // API endpoints
-  server.on("/api/status", HTTP_GET, handleStatus);
-  server.on("/api/config", HTTP_POST, handleConfig);
-  server.on("/api/logs", HTTP_GET, handleLogs);
-  server.on("/api/command/lock", HTTP_POST, handleLock);
-  server.on("/api/command/unlock", HTTP_POST, handleUnlock);
-  server.on("/api/command/reboot", HTTP_POST, handleReboot);
-  
-  // Handle 404
-  server.onNotFound([]() {
-    server.send(404, "text/plain", "Not found");
-  });
-}
-
-// Route handlers
-void handleRoot() {
-  File file = LittleFS.open("/index.html", "r");
-  server.streamFile(file, "text/html");
-  file.close();
-}
-
-void handleStatus() {
-  StaticJsonDocument<200> doc;
-  
-  // Get door status
-  bool doorOpen = digitalRead(DOOR_SENSOR_PIN) == LOW;
-  doc["doorStatus"] = doorOpen ? "Unlocked" : "Locked";
-  
-  // Get WiFi signal
-  int rssi = WiFi.RSSI();
-  int signal = map(rssi, -100, -50, 0, 100);
-  doc["wifiSignal"] = signal;
-  
-  // Get last access time
-  doc["lastAccess"] = lastAccessTime;
-  
-  // Get uptime
-  doc["uptime"] = millis() / 1000;
-  
-  String response;
-  serializeJson(doc, response);
-  server.send(200, "application/json", response);
-}
-
-void handleConfig() {
-  if (server.method() != HTTP_POST) {
-    server.send(405, "text/plain", "Method Not Allowed");
-    return;
+// Helper implementations
+void loadSettings() {
+  File f = LittleFS.open(SETTINGS_FILE, "r");
+  if(!f){ // defaults
+    settings = {"","","admin","1234","rc522", PIN_SDA, PIN_RST, 30, "00:00", "NodeMCU v1"};
+    saveSettings(); return;
   }
-  
-  String body = server.arg("plain");
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, body);
-  
-  if (error) {
-    server.send(400, "text/plain", "Invalid JSON");
-    return;
-  }
-  
-  const char* ssid = doc["ssid"];
-  const char* password = doc["password"];
-  
-  if (!ssid || !password) {
-    server.send(400, "text/plain", "Missing SSID or password");
-    return;
-  }
-  
-  // Save WiFi credentials
-  File configFile = LittleFS.open("/config.json", "w");
-  if (!configFile) {
-    server.send(500, "text/plain", "Failed to save config");
-    return;
-  }
-  
-  configFile.print(body);
-  configFile.close();
-  
-  // Send response
-  server.send(200, "application/json", "{\"success\":true}");
-  
-  // Restart ESP
-  delay(1000);
-  ESP.restart();
+  DynamicJsonDocument doc(512); deserializeJson(doc, f); f.close();
+  settings.ssid = doc["ssid"].as<String>();
+  settings.pass = doc["pass"].as<String>();
+  settings.user = doc["user"].as<String>();
+  settings.pwd = doc["pwd"].as<String>();
+  settings.readerType = doc["readerType"].as<String>();
+  settings.w0 = doc["w0"];
+  settings.w1 = doc["w1"];
+  settings.autoLockSec = doc["autoLock"];
+  settings.autoRebootTime = doc["rebootTime"].as<String>();
+  settings.deviceModel = doc["model"].as<String>();
 }
 
-void handleLogs() {
-  File logFile = LittleFS.open("/logs.json", "r");
-  if (!logFile) {
-    server.send(200, "application/json", "[]");
-    return;
-  }
-  
-  server.streamFile(logFile, "application/json");
-  logFile.close();
+void saveSettings() {
+  File f = LittleFS.open(SETTINGS_FILE, "w");
+  DynamicJsonDocument doc(512);
+  doc["ssid"] = settings.ssid;
+  doc["pass"] = settings.pass;
+  doc["user"] = settings.user;
+  doc["pwd"] = settings.pwd;
+  doc["readerType"] = settings.readerType;
+  doc["w0"] = settings.w0;
+  doc["w1"] = settings.w1;
+  doc["autoLock"] = settings.autoLockSec;
+  doc["rebootTime"] = settings.autoRebootTime;
+  doc["model"] = settings.deviceModel;
+  serializeJson(doc, f);
+  f.close();
 }
 
-void handleLock() {
-  digitalWrite(RELAY_PIN, HIGH);
-  logAccess("lock", "success");
-  server.send(200, "application/json", "{\"success\":true}");
+void loadUsers() {
+  if(!LittleFS.exists("/users.json")) return;
+  File f = LittleFS.open("/users.json","r");
+  DynamicJsonDocument doc(1024); deserializeJson(doc,f); f.close();
+  for(auto u: doc["users"].as<JsonArray>()) users.push_back({u["uid"].as<String>(), u["name"].as<String>()});
 }
 
-void handleUnlock() {
-  digitalWrite(RELAY_PIN, LOW);
-  logAccess("unlock", "success");
-  server.send(200, "application/json", "{\"success\":true}");
+void saveUsers() {
+  File f = LittleFS.open("/users.json","w");
+  DynamicJsonDocument doc(1024);
+  JsonArray arr = doc.createNestedArray("users");
+  for(auto &u: users){ auto o = arr.createNestedObject(); o["uid"] = u.uid; o["name"] = u.name; }
+  serializeJson(doc,f); f.close();
 }
 
-void handleReboot() {
-  server.send(200, "application/json", "{\"success\":true}");
-  delay(1000);
-  ESP.restart();
+void loadLogs() {
+  if(!LittleFS.exists("/logs.json")) return;
+  File f = LittleFS.open("/logs.json","r");
+  DynamicJsonDocument doc(2048); deserializeJson(doc,f); f.close();
+  for(auto e: doc["logs"].as<JsonArray>()) logs.push_back({e["time"].as<String>(), e["uid"].as<String>(), e["result"].as<String>()});
 }
 
-// Helper functions
-void logAccess(const char* method, const char* status) {
-  File logFile = LittleFS.open("/logs.json", "r");
-  StaticJsonDocument<1024> doc;
-  
-  if (logFile) {
-    DeserializationError error = deserializeJson(doc, logFile);
-    logFile.close();
-    
-    if (error) {
-      doc = JsonArray();
-    }
-  } else {
-    doc = JsonArray();
-  }
-  
-  JsonObject log = doc.createNestedObject();
-  log["time"] = getTimeString();
-  log["method"] = method;
-  log["status"] = status;
-  
-  // Keep only last 100 logs
-  while (doc.size() > 100) {
-    doc.remove(0);
-  }
-  
-  logFile = LittleFS.open("/logs.json", "w");
-  if (logFile) {
-    serializeJson(doc, logFile);
-    logFile.close();
-  }
+void saveLogs() {
+  File f = LittleFS.open("/logs.json","w");
+  DynamicJsonDocument doc(2048);
+  JsonArray arr = doc.createNestedArray("logs");
+  for(auto &e: logs){ auto o = arr.createNestedObject(); o["time"]=e.time; o["uid"]=e.uid; o["result"]=e.result; }
+  serializeJson(doc,f); f.close();
 }
 
-String getTimeString() {
-  time_t now = time(nullptr);
-  struct tm timeinfo;
-  localtime_r(&now, &timeinfo);
-  
-  char timeStr[20];
-  strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
-  return String(timeStr);
+void scheduleReboot() {
+  // parse HH:MM
+  int hh = settings.autoRebootTime.substring(0,2).toInt();
+  int mm = settings.autoRebootTime.substring(3,5).toInt();
+  timeClient.update();
+  int nowSec = timeClient.getHours()*3600 + timeClient.getMinutes()*60 + timeClient.getSeconds();
+  int targetSec = hh*3600 + mm*60;
+  int diff = (targetSec - nowSec + 86400) % 86400;
+  rebootTicker.detach();
+  rebootTicker.once(diff, [](){ ESP.restart(); });
 }
 
-// Input checks
-void checkKeypad() {
-  char key = keypad.getKey();
-  if (key) {
-    // Handle keypad input
-  }
-}
-
-void checkRFID() {
-  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial())
-    return;
-    
-  // Handle RFID card
-}
-
-void checkDoorSensor() {
-  // Monitor door state
+void handleLock(bool lockState) {
+  digitalWrite(D0, lockState); // example relay pin
+  String result = lockState?"LOCKED":"UNLOCKED";
+  timeClient.update();
+  logs.push_back({timeClient.getFormattedTime(), "-", result});
+  saveLogs();
 }

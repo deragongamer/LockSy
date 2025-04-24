@@ -1,0 +1,41 @@
+<!-- data/index.html -->
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login - LockSy Bot</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="theme-dark">
+  <main class="login-container grid center h-screen">
+    <div class="card login-card rounded-2xl shadow-lg p-6 text-center">
+      <img src="logo.png" alt="LockSy Bot Logo" class="logo rounded-full mx-auto mb-4" style="width: 80px;">
+      <h2 class="text-xl mb-4">ورود به کنترل پنل LockSy</h2>
+      <form id="login-form" class="grid gap-4">
+        <input type="text" id="username" class="input-field" placeholder="نام کاربری">
+        <input type="password" id="password" class="input-field" placeholder="رمز عبور">
+        <button type="submit" class="btn full-width">ورود</button>
+        <p id="login-error" class="text-error hidden">نام کاربری یا رمز عبور اشتباه است</p>
+      </form>
+      <footer class="mt-6 text-sm">
+        <p>© 2025 LockSy Bot</p>
+        <p>Developed by Dragon Gamer & GPT</p>
+      </footer>
+    </div>
+  </main>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      const user = document.getElementById('username').value;
+      const pass = document.getElementById('password').value;
+
+      if (user === 'admin' && pass === '1234') {
+        window.location.href = 'index.html';
+      } else {
+        document.getElementById('login-error').classList.remove('hidden');
+      }
+    });
+  </script>
+</body>
+</html>

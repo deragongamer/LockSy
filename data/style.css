@@ -1,91 +1,178 @@
-/* Custom styles */
-body {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-}
+/* style.css */
 
-.container {
-    flex: 1;
-}
-
-/* Card styles */
-.card {
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+:root {
+    --primary-color: #007bff;
+    --background-dark: #121212;
+    --background-light: #f4f4f4;
+    --text-dark: #ffffff;
+    --text-light: #121212;
+    --card-bg-dark: #1e1e1e;
+    --card-bg-light: #ffffff;
+    --border-radius: 1rem;
+  }
+  
+  body {
+    font-family: 'Vazirmatn', sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: var(--background-dark);
+    color: var(--text-dark);
     transition: all 0.3s ease;
-}
-
-.card:hover {
-    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-}
-
-/* Button styles */
-.btn {
-    transition: all 0.2s ease;
-}
-
-.btn:hover {
-    transform: translateY(-1px);
-}
-
-/* Status badges */
-.badge {
-    font-size: 0.9em;
-    padding: 0.5em 1em;
-}
-
-/* Table styles */
-.table {
-    margin-bottom: 0;
-}
-
-.table th {
-    border-top: none;
-    font-weight: 600;
-}
-
-/* Form styles */
-.form-control:focus {
-    box-shadow: 0 0 0 0.2rem rgba(0,123,255,0.25);
-}
-
-/* Dark mode support */
-@media (prefers-color-scheme: dark) {
-    body {
-        background-color: #212529;
-        color: #f8f9fa;
-    }
-    
-    .card {
-        background-color: #2c3034;
-        border-color: #373b3e;
-    }
-    
-    .card-header {
-        background-color: #343a40;
-        border-bottom-color: #373b3e;
-    }
-    
-    .table {
-        color: #f8f9fa;
-    }
-    
-    .table td, .table th {
-        border-color: #373b3e;
-    }
-    
-    .form-control {
-        background-color: #343a40;
-        border-color: #373b3e;
-        color: #f8f9fa;
-    }
-    
-    .form-control:focus {
-        background-color: #343a40;
-        color: #f8f9fa;
-    }
-    
-    .text-muted {
-        color: #adb5bd !important;
-    }
-} 
+  }
+  
+  body.theme-light {
+    background-color: var(--background-light);
+    color: var(--text-light);
+  }
+  
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 2rem;
+    background-color: var(--card-bg-dark);
+    color: var(--text-dark);
+  }
+  
+  body.theme-light .topbar {
+    background-color: var(--card-bg-light);
+    color: var(--text-light);
+  }
+  
+  .logo {
+    height: 50px;
+    margin-right: 1rem;
+  }
+  
+  .container {
+    max-width: 1000px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+  }
+  
+  .card {
+    background-color: var(--card-bg-dark);
+    padding: 1.5rem;
+    border-radius: var(--border-radius);
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+  }
+  
+  body.theme-light .card {
+    background-color: var(--card-bg-light);
+  }
+  
+  .input-field {
+    padding: 0.5rem;
+    width: 100%;
+    margin: 0.5rem 0;
+    border-radius: 0.5rem;
+    border: 1px solid #ccc;
+  }
+  
+  .btn {
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    cursor: pointer;
+  }
+  
+  .btn.icon-btn {
+    font-size: 1.2rem;
+  }
+  
+  .btn.large {
+    font-size: 1.5rem;
+    padding: 1rem 1.5rem;
+  }
+  
+  .btn.full-width {
+    width: 100%;
+  }
+  
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+  }
+  
+  .table th,
+  .table td {
+    border: 1px solid #ccc;
+    padding: 0.5rem;
+    text-align: left;
+  }
+  
+  .grid {
+    display: grid;
+  }
+  
+  .grid.gap-3 {
+    gap: 1rem;
+  }
+  
+  .grid.gap-6 {
+    gap: 2rem;
+  }
+  
+  .grid.cols-2 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  .grid.cols-4 {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  
+  .flex {
+    display: flex;
+    align-items: center;
+  }
+  
+  .flex.gap-3 {
+    gap: 1rem;
+  }
+  
+  .rounded-lg {
+    border-radius: 1rem;
+  }
+  
+  .rounded-full {
+    border-radius: 9999px;
+  }
+  
+  .rounded-2xl {
+    border-radius: 1.5rem;
+  }
+  
+  .shadow-md {
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+  
+  .footer {
+    margin-top: 2rem;
+    padding: 1rem;
+    background-color: var(--card-bg-dark);
+    color: var(--text-dark);
+  }
+  
+  body.theme-light .footer {
+    background-color: var(--card-bg-light);
+    color: var(--text-light);
+  }
+  
+  .text-center {
+    text-align: center;
+  }
+  
+  .hidden {
+    display: none;
+  }
+  
+  .drag-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    padding-top: 1rem;
+  }
+  
