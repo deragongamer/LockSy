@@ -1,0 +1,33 @@
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build files
+*.o
+*.hex
+*.elf
+*.bin
+
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+config.h
+
+# Debug files
+debug.log
+*.log
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*~
+
+# Arduino build files
+build/ 
