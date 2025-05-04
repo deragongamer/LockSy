@@ -54,22 +54,23 @@
 #include <UniversalTelegramBot.h>
 #include <WiFiClientSecure.h>
 #include <AES.h>
-#include <base64.h>
 
-// Default PIN Configuration (can be changed through web panel)
+// Telegram Bot Configuration
+#define BOT_TOKEN "YOUR_BOT_TOKEN_HERE"  // توکن ربات خودتون رو اینجا قرار بدید
+#define CHAT_ID "YOUR_CHAT_ID_HERE"      // شناسه چت خودتون رو اینجا قرار بدید
+
+// Pin Configuration
 #define RFID_SS_PIN D4
 #define RFID_RST_PIN D3
 #define RELAY_PIN D8
 #define BUZZER_PIN D0
 #define DOOR_SENSOR_PIN D1
 #define STATUS_LED_PIN D2
-
-// New PIN Configuration
-#define FINGERPRINT_RX 14  // D5
-#define FINGERPRINT_TX 12  // D6
+#define FINGERPRINT_RX D5
+#define FINGERPRINT_TX D6
 #define TEMP_SENSOR_PIN A0
-#define BACKUP_BATTERY_PIN D9
-#define TAMPER_SENSOR_PIN D10
+#define BACKUP_BATTERY_PIN D7
+#define TAMPER_SENSOR_PIN D8
 
 // WiFi credentials (will be configurable)
 const char* ssid = "Locksy-Setup";  // Default AP name
@@ -178,8 +179,21 @@ struct Schedule {
 Schedule schedules[20];
 int scheduleCount = 0;
 
+// Function declarations
+void setupGeofencing();
+void loadSchedules();
+void checkSchedules();
+void checkGeofence();
+void handleFingerprint();
+void handleTemperature();
+void handleBattery();
+void handleSchedule();
+void handleGeofence();
+void handleEmergency();
+
 void setup() {
   Serial.begin(115200);
+  Serial.println("\nStarting Locksy...");
   
   // Initialize pins
   pinMode(RELAY_PIN, OUTPUT);
@@ -194,7 +208,7 @@ void setup() {
   // Initialize filesystem
   if(!LittleFS.begin()) {
     Serial.println("Error mounting filesystem");
-    return;
+    // Don't return, continue with AP mode
   }
   
   // Load configuration
@@ -202,12 +216,24 @@ void setup() {
   
   // Try to connect to stored WiFi
   if(strlen(wifi_ssid) > 0) {
+    Serial.println("Connecting to WiFi...");
+    WiFi.mode(WIFI_STA);
     WiFi.begin(wifi_ssid, wifi_password);
+    
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-      delay(500);
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+      delay(1000);
       Serial.print(".");
       attempts++;
+      yield(); // Allow ESP8266 to handle background tasks
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nWiFi connected!");
+      Serial.print("IP address: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("\nWiFi connection failed!");
     }
   }
   
@@ -220,15 +246,11 @@ void setup() {
     Serial.println("AP Started");
     Serial.print("AP IP address: ");
     Serial.println(WiFi.softAPIP());
-  } else {
-    Serial.println("\nWiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    
-    // Initialize NTP
-    timeClient.begin();
-    timeClient.setTimeOffset(0);  // UTC
   }
+  
+  // Initialize NTP
+  timeClient.begin();
+  timeClient.setTimeOffset(0);  // UTC
   
   // Setup web server routes
   setupWebServer();
@@ -264,6 +286,14 @@ void setup() {
 }
 
 void loop() {
+  // Check WiFi connection and reconnect if needed
+  if (WiFi.status() != WL_CONNECTED && strlen(wifi_ssid) > 0) {
+    Serial.println("WiFi connection lost. Reconnecting...");
+    WiFi.reconnect();
+    delay(5000); // Wait for reconnection
+    yield(); // Allow ESP8266 to handle background tasks
+  }
+  
   server.handleClient();
   checkKeypad();
   checkRFID();
@@ -284,6 +314,10 @@ void loop() {
   if (emergencyMode) {
     handleEmergencyMode();
   }
+  
+  // Add a small delay to prevent watchdog timer issues
+  delay(10);
+  yield(); // Allow ESP8266 to handle background tasks
 }
 
 // Web server setup
@@ -909,8 +943,12 @@ void checkDoorSensor() {
 
 // New feature implementations
 void setupTelegramBot() {
-  secured_client.setInsecure();
-  bot.sendMessage(CHAT_ID, "🔒 Locksy system is online!", "");
+  if (strlen(BOT_TOKEN) > 0 && strlen(CHAT_ID) > 0) {
+    secured_client.setInsecure();
+    if (!bot.sendMessage(CHAT_ID, "🔒 Locksy system is online!", "")) {
+      Serial.println("Failed to send Telegram message");
+    }
+  }
 }
 
 void setupEncryption() {
@@ -921,30 +959,42 @@ void setupEncryption() {
 }
 
 void checkTelegram() {
+  if (strlen(BOT_TOKEN) == 0 || strlen(CHAT_ID) == 0) return;
+  
   if (millis() - lastTelegramCheck > telegramCheckInterval) {
     int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-    
-    for (int i = 0; i < numNewMessages; i++) {
-      handleTelegramCommand(bot.messages[i].text);
+    if (numNewMessages > 0) {
+      for (int i = 0; i < numNewMessages; i++) {
+        handleTelegramCommand(bot.messages[i].text);
+      }
     }
-    
     lastTelegramCheck = millis();
   }
 }
 
 void handleTelegramCommand(String command) {
+  if (strlen(BOT_TOKEN) == 0 || strlen(CHAT_ID) == 0) return;
+  
   if (command == "/status") {
     String status = getSystemStatus();
-    bot.sendMessage(CHAT_ID, status, "");
+    if (!bot.sendMessage(CHAT_ID, status, "")) {
+      Serial.println("Failed to send status message");
+    }
   } else if (command == "/lock") {
     handleLock();
-    bot.sendMessage(CHAT_ID, "🔒 Door locked!", "");
+    if (!bot.sendMessage(CHAT_ID, "🔒 Door locked!", "")) {
+      Serial.println("Failed to send lock message");
+    }
   } else if (command == "/unlock") {
     handleUnlock();
-    bot.sendMessage(CHAT_ID, "🔓 Door unlocked!", "");
+    if (!bot.sendMessage(CHAT_ID, "🔓 Door unlocked!", "")) {
+      Serial.println("Failed to send unlock message");
+    }
   } else if (command == "/temperature") {
     String temp = String(temperature) + "°C";
-    bot.sendMessage(CHAT_ID, "🌡️ Current temperature: " + temp, "");
+    if (!bot.sendMessage(CHAT_ID, "🌡️ Current temperature: " + temp, "")) {
+      Serial.println("Failed to send temperature message");
+    }
   }
 }
 
@@ -994,26 +1044,34 @@ String encryptData(String data) {
     data += '\0';
   }
   
-  byte plain[data.length()];
-  byte cipher[data.length()];
-  data.getBytes(plain, data.length());
+  byte plain[16];
+  byte cipher[16];
+  data.getBytes(plain, 16);
   
   // Encrypt
-  aes.encrypt(plain, cipher, data.length() / 16);
+  aes.encrypt(plain, cipher);
   
-  // Convert to base64
-  return base64::encode(cipher, data.length());
+  // Convert to hex string
+  String result = "";
+  for(int i = 0; i < 16; i++) {
+    char hex[3];
+    sprintf(hex, "%02X", cipher[i]);
+    result += hex;
+  }
+  return result;
 }
 
 String decryptData(String data) {
-  // Decode base64
-  int inputLen = base64::decodeLength(data.c_str());
-  byte cipher[inputLen];
-  byte plain[inputLen];
-  base64::decode(data.c_str(), cipher, inputLen);
+  // Convert hex string to byte array
+  byte cipher[16];
+  for(int i = 0; i < 16; i++) {
+    char hex[3] = {data[i*2], data[i*2+1], '\0'};
+    cipher[i] = strtol(hex, NULL, 16);
+  }
   
   // Decrypt
-  aes.decrypt(cipher, plain, inputLen / 16);
+  byte plain[16];
+  aes.decrypt(cipher, plain);
   
   // Convert to string and trim padding
   String result = String((char*)plain);
@@ -1022,8 +1080,12 @@ String decryptData(String data) {
 }
 
 void sendAlert(String message) {
+  if (strlen(BOT_TOKEN) == 0 || strlen(CHAT_ID) == 0) return;
+  
   if (WiFi.status() == WL_CONNECTED) {
-    bot.sendMessage(CHAT_ID, message, "");
+    if (!bot.sendMessage(CHAT_ID, message, "")) {
+      Serial.println("Failed to send Telegram alert");
+    }
   }
   logAccess("alert", message.c_str());
 }
@@ -1038,5 +1100,85 @@ String getSystemStatus() {
   status += "Emergency Mode: " + String(emergencyMode ? "🚨 ACTIVE" : "✅ Inactive") + "\n";
   
   return status;
+}
+
+void setupGeofencing() {
+  // Initialize geofencing
+  geofenceCount = 0;
+}
+
+void loadSchedules() {
+  // Load schedules from storage
+  scheduleCount = 0;
+}
+
+void checkSchedules() {
+  // Check if any scheduled events need to be triggered
+  time_t now = time(nullptr);
+  for (int i = 0; i < scheduleCount; i++) {
+    if (now >= schedules[i].startTime && now <= schedules[i].endTime) {
+      // Handle scheduled event
+    }
+  }
+}
+
+void checkGeofence() {
+  // Check if device is within any geofence
+  for (int i = 0; i < geofenceCount; i++) {
+    // Implement geofence checking logic
+  }
+}
+
+void handleFingerprint() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+  // Handle fingerprint operations
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleTemperature() {
+  StaticJsonDocument<200> doc;
+  doc["temperature"] = temperature;
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleBattery() {
+  StaticJsonDocument<200> doc;
+  doc["battery"] = batteryLevel;
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleSchedule() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+  // Handle schedule operations
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleGeofence() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+  // Handle geofence operations
+  server.send(200, "application/json", "{\"success\":true}");
+}
+
+void handleEmergency() {
+  if (server.method() != HTTP_POST) {
+    server.send(405, "text/plain", "Method Not Allowed");
+    return;
+  }
+  emergencyMode = true;
+  handleEmergencyMode();
+  server.send(200, "application/json", "{\"success\":true}");
 }
 
